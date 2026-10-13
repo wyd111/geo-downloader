@@ -191,6 +191,7 @@ impl TerrainIonClient {
             let cancel = cancel.clone();
             let pause = pause.clone();
             let version = version.clone();
+            let scheme = scheme.clone();
             async move {
                 if cancel.is_cancelled() { return Err("已取消".to_string()); }
                 pause.wait_if_paused().await;
