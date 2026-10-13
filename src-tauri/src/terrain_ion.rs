@@ -21,6 +21,9 @@ pub struct TerrainRequest {
     pub bounds: [f64; 4],
     pub min_level: u8,
     pub max_level: u8,
+    /// Optional non-contiguous z levels, matching the GeoTIFF level picker.
+    #[serde(default)]
+    pub zoom_levels: Option<Vec<u8>>,
     pub save_path: String,
     #[serde(default = "default_concurrency")]
     pub concurrency: usize,
@@ -38,6 +41,20 @@ pub struct TerrainSummary {
     pub projection: String,
     pub scheme: String,
     pub estimated_tiles: u32,
+    pub level_tiles: Vec<TerrainLevelCount>,
+    /// Projected bytes of terrain network payload / raw stored tile bytes.
+    pub estimated_bytes: u64,
+    pub average_tile_bytes: u64,
+    /// "content-length-sample" or "fallback-64kib".
+    pub estimate_method: String,
+    /// Buffer budget only: not the full application working set.
+    pub estimated_task_buffer_bytes: u64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct TerrainLevelCount {
+    pub level: u8,
+    pub tiles: u32,
 }
 
 #[derive(Debug, Clone)]
@@ -150,12 +167,70 @@ impl TerrainIonClient {
 
     pub async fn analyze(&self, request: &TerrainRequest) -> Result<TerrainSummary, String> {
         let plan = self.plan(request).await?;
+        let mut counts: BTreeMap<u8, u32> = BTreeMap::new();
+        for tile in &plan.tiles {
+            *counts.entry(tile.z).or_default() += 1;
+        }
+        let level_tiles = counts.into_iter().map(|(level, tiles)| TerrainLevelCount {
+            level, tiles,
+        }).collect::<Vec<_>>();
+
+        // HEAD only: do not download any mesh content merely to show an estimate.
+        // A few representative Content-Length samples improve the rough fallback.
+        let mut samples = Vec::<u64>::new();
+        if !plan.tiles.is_empty() {
+            let sample_slots = 6usize.min(plan.tiles.len());
+            let version = plan.layer["version"].as_str().unwrap_or("");
+            let scheme = plan.layer["scheme"].as_str().unwrap_or("tms");
+            for i in 0..sample_slots {
+                let index = if sample_slots == 1 {
+                    0
+                } else {
+                    i * (plan.tiles.len() - 1) / (sample_slots - 1)
+                };
+                let tile = plan.tiles[index];
+                let url = terrain_tile_url(
+                    &plan.base_url, &plan.template, scheme, version, tile,
+                )?;
+                let mut req = self.http.head(url).header(
+                    "Accept",
+                    "application/vnd.quantized-mesh;extensions=octvertexnormals-watermask-metadata"
+                );
+                if let Some(token) = &plan.bearer { req = req.bearer_auth(token); }
+                if let Ok(resp) = req.send().await {
+                    if resp.status().is_success() {
+                        if let Some(n) = resp.content_length().filter(|n| *n > 0 && *n < 50_000_000) {
+                            samples.push(n);
+                        }
+                    }
+                }
+            }
+        }
+        const FALLBACK_BYTES: u64 = 65_536; // heuristic, not measured
+        let average_tile_bytes = if samples.is_empty() {
+            FALLBACK_BYTES
+        } else {
+            samples.iter().sum::<u64>() / samples.len() as u64
+        };
+        let estimate_method = if samples.is_empty() {
+            "fallback-64kib"
+        } else {
+            "content-length-sample"
+        }.to_string();
+        let total = plan.tiles.len() as u64;
         Ok(TerrainSummary {
             version: plan.layer["version"].as_str().unwrap_or("").to_string(),
             format: plan.layer["format"].as_str().unwrap_or("").to_string(),
             projection: plan.layer["projection"].as_str().unwrap_or("EPSG:4326").to_string(),
             scheme: plan.layer["scheme"].as_str().unwrap_or("tms").to_string(),
-            estimated_tiles: plan.tiles.len() as u32,
+            estimated_tiles: total as u32,
+            level_tiles,
+            estimated_bytes: total.saturating_mul(average_tile_bytes),
+            average_tile_bytes,
+            estimate_method,
+            estimated_task_buffer_bytes: (request.concurrency.clamp(1, 32) as u64)
+                .saturating_mul(average_tile_bytes)
+                .saturating_mul(3),
         })
     }
 
@@ -281,9 +356,10 @@ impl TerrainIonClient {
         let object = offline.as_object_mut().ok_or("layer.json 根节点不是对象")?;
         object.insert("tiles".into(), json!(["{z}/{x}/{y}.terrain"]));
         object.insert("scheme".into(), json!("tms"));
-        object.insert("available".into(), availability(&saved, request.max_level));
-        object.insert("minzoom".into(), json!(request.min_level));
-        object.insert("maxzoom".into(), json!(request.max_level));
+        object.insert("available".into(), availability(&saved, *selected_levels(request)?.last().unwrap()));
+        let selected = selected_levels(request)?;
+        object.insert("minzoom".into(), json!(selected[0]));
+        object.insert("maxzoom".into(), json!(selected[selected.len() - 1]));
         object.remove("metadataAvailability"); // no external availability metadata
         object.remove("parentUrl");
         let output = out.join("layer.json");
@@ -297,9 +373,7 @@ fn validate_request(r: &TerrainRequest) -> Result<(), String> {
     if r.asset_id == 0 || r.access_token.trim().is_empty() {
         return Err("请填写有效的 Cesium ion Asset ID 和 Access Token".into());
     }
-    if r.min_level > r.max_level || r.max_level > MAX_LEVEL {
-        return Err(format!("地形层级要求 0 <= min <= max <= {MAX_LEVEL}"));
-    }
+    selected_levels(r)?;
     let [w, s, e, n] = r.bounds;
     if !r.bounds.iter().all(|v| v.is_finite()) ||
         w < -180.0 || e > 180.0 || s < -90.0 || n > 90.0 ||
@@ -310,6 +384,41 @@ fn validate_request(r: &TerrainRequest) -> Result<(), String> {
         return Err("请选择保存目录".into());
     }
     Ok(())
+}
+
+fn selected_levels(r: &TerrainRequest) -> Result<Vec<u8>, String> {
+    let mut levels = if let Some(values) = &r.zoom_levels {
+        values.clone()
+    } else if r.min_level <= r.max_level {
+        (r.min_level..=r.max_level).collect()
+    } else {
+        Vec::new()
+    };
+    levels.sort_unstable();
+    levels.dedup();
+    if levels.is_empty() || levels.iter().any(|z| *z > MAX_LEVEL) {
+        return Err(format!("请至少选择一个 0–{MAX_LEVEL} 的地形层级"));
+    }
+    Ok(levels)
+}
+
+fn terrain_tile_url(
+    base: &Url, template: &str, scheme: &str, version: &str, tile: Tile,
+) -> Result<Url, String> {
+    let remote_y = if scheme == "tms" { tile.y } else { (1u32 << tile.z) - 1 - tile.y };
+    let relative = template
+        .replace("{z}", &tile.z.to_string())
+        .replace("{x}", &tile.x.to_string())
+        .replace("{y}", &remote_y.to_string())
+        .replace("{version}", version);
+    if relative.contains('{') || relative.contains('}') {
+        return Err("瓦片 URL 包含未支持的模板占位符".into());
+    }
+    let url = base.join(&relative).map_err(|e| format!("瓦片 URL 无效: {e}"))?;
+    if url.scheme() != "https" {
+        return Err("瓦片 URL 必须使用 HTTPS".into());
+    }
+    Ok(url)
 }
 
 /// GeographicTilingScheme: level zero is 2x1. Returns TMS Y (south-to-north).
@@ -344,7 +453,7 @@ fn in_available(layer: &Value, t: Tile) -> bool {
 
 fn select_tiles(request: &TerrainRequest, layer: &Value) -> Result<Vec<Tile>, String> {
     let mut tiles = Vec::new();
-    for z in request.min_level..=request.max_level {
+    for z in selected_levels(request)? {
         let (x0, x1, y0, y1) = tile_range(request.bounds, z);
         for x in x0..=x1 {
             for y in y0..=y1 {
