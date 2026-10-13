@@ -3874,13 +3874,14 @@ pub async fn serve_local_tiles(dir_path: String) -> Result<String, String> {
                             Some("png") => "image/png",
                             Some("jpg" | "jpeg") => "image/jpeg",
                             Some("ktx2") => "image/ktx2",
+                            Some("terrain") => "application/vnd.quantized-mesh",
                             Some("pbf" | "mvt") => "application/x-protobuf",
                             Some("webp") => "image/webp",
                             _ => "application/octet-stream",
                         };
                         // 矢量瓦片往往以 gzip 落盘，浏览器需要 Content-Encoding: gzip 才能透明解压
                         let is_gzip = data.len() >= 2 && data[0] == 0x1f && data[1] == 0x8b;
-                        let encoding_header = if is_gzip && matches!(ext, Some("pbf" | "mvt")) {
+                        let encoding_header = if is_gzip && matches!(ext, Some("pbf" | "mvt" | "terrain")) {
                             "Content-Encoding: gzip\r\n"
                         } else {
                             ""
