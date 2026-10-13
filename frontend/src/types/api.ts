@@ -445,6 +445,8 @@ export interface TerrainIonRequest {
   bounds: [number, number, number, number]
   min_level: number
   max_level: number
+  /** Non-contiguous level selection (GeoTIFF-style). */
+  zoom_levels?: number[]
   save_path: string
   concurrency: number
   proxy: Nullable<string>
@@ -457,4 +459,10 @@ export interface TerrainIonSummary {
   projection: string
   scheme: string
   estimated_tiles: number
+  level_tiles: Array<{ level: number; tiles: number }>
+  /** Estimated raw tile bytes (network payload and stored files). */
+  estimated_bytes: number
+  average_tile_bytes: number
+  estimate_method: 'content-length-sample' | 'fallback-64kib'
+  estimated_task_buffer_bytes: number
 }
