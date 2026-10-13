@@ -6,7 +6,7 @@ use reqwest::{Client, Url};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use tokio_util::sync::CancellationToken;
 use crate::task::PauseControl;
 
@@ -255,6 +255,7 @@ impl TerrainIonClient {
                 message: format!("Quantized Mesh: {finished}/{total} (失败 {failed})"),
             });
         }
+        drop(stream);
         if failed > 0 {
             return Err(format!(
                 "{} 个地形瓦片下载失败；可再次下载继续补齐。首次错误: {}",
@@ -268,6 +269,7 @@ impl TerrainIonClient {
         let mut offline = plan.layer;
         let object = offline.as_object_mut().ok_or("layer.json 根节点不是对象")?;
         object.insert("tiles".into(), json!(["{z}/{x}/{y}.terrain"]));
+        object.insert("scheme".into(), json!("tms"));
         object.insert("available".into(), availability(&saved, request.max_level));
         object.insert("minzoom".into(), json!(request.min_level));
         object.insert("maxzoom".into(), json!(request.max_level));
