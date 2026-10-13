@@ -179,7 +179,7 @@ impl TerrainIonClient {
         // A few representative Content-Length samples improve the rough fallback.
         let mut samples = Vec::<u64>::new();
         if !plan.tiles.is_empty() {
-            let sample_slots = 6usize.min(plan.tiles.len());
+            let sample_slots = 4usize.min(plan.tiles.len());
             let version = plan.layer["version"].as_str().unwrap_or("");
             let scheme = plan.layer["scheme"].as_str().unwrap_or("tms");
             for i in 0..sample_slots {
@@ -192,7 +192,9 @@ impl TerrainIonClient {
                 let url = terrain_tile_url(
                     &plan.base_url, &plan.template, scheme, version, tile,
                 )?;
-                let mut req = self.http.head(url).header(
+                let mut req = self.http.head(url)
+                    .timeout(std::time::Duration::from_secs(5))
+                    .header(
                     "Accept",
                     "application/vnd.quantized-mesh;extensions=octvertexnormals-watermask-metadata"
                 );
