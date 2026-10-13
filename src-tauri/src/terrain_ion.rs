@@ -510,6 +510,42 @@ mod tests {
         assert_eq!(tile_range([116.0, 39.0, 117.0, 40.0], 1), (3, 3, 1, 1));
     }
     #[test]
+    fn multi_level_selection_is_deduplicated_and_sorted() {
+        let request = TerrainRequest {
+            asset_id: 42,
+            access_token: "local-test-only".into(),
+            bounds: [116.0, 39.0, 117.0, 40.0],
+            min_level: 0,
+            max_level: 16,
+            zoom_levels: Some(vec![12, 5, 12, 9]),
+            save_path: "test-data".into(),
+            concurrency: 8,
+            proxy: None,
+            confirm_offline_rights: false,
+        };
+        assert_eq!(selected_levels(&request).unwrap(), vec![5, 9, 12]);
+        let layer = json!({});
+        let tiles = select_tiles(&request, &layer).unwrap();
+        assert!(tiles.iter().all(|tile| [5, 9, 12].contains(&tile.z)));
+    }
+    #[test]
+    fn empty_multi_level_selection_is_invalid() {
+        let request = TerrainRequest {
+            asset_id: 42,
+            access_token: "local-test-only".into(),
+            bounds: [116.0, 39.0, 117.0, 40.0],
+            min_level: 0,
+            max_level: 16,
+            zoom_levels: Some(vec![]),
+            save_path: "test-data".into(),
+            concurrency: 8,
+            proxy: None,
+            confirm_offline_rights: false,
+        };
+        assert!(validate_request(&request).is_err());
+    }
+
+    #[test]
     fn availability_filters_and_groups() {
         let layer = json!({"available": [[{"startX":1,"endX":1,"startY":0,"endY":0}]]});
         assert!(in_available(&layer, Tile { z:0, x:1, y:0 }));
