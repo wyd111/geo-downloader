@@ -196,7 +196,10 @@ impl TerrainIonClient {
                 if cancel.is_cancelled() { return Err("已取消".to_string()); }
                 pause.wait_if_paused().await;
                 if cancel.is_cancelled() { return Err("已取消".to_string()); }
-                if dest.exists() { return Ok(Some(tile)); } // resumable
+                // Do not treat an interrupted zero-length file as a completed tile.
+                if tokio::fs::metadata(&dest).await.map(|m| m.len() > 0).unwrap_or(false) {
+                    return Ok(Some(tile));
+                }
                 let remote_y = if scheme == "tms" {
                     tile.y
                 } else {
@@ -229,7 +232,14 @@ impl TerrainIonClient {
                 if bytes.is_empty() { return Err("服务器返回空地形瓦片".into()); }
                 let parent = dest.parent().ok_or("无效的本地路径")?;
                 tokio::fs::create_dir_all(parent).await.map_err(|e| e.to_string())?;
-                tokio::fs::write(&dest, bytes).await.map_err(|e| e.to_string())?;
+                // Atomic finalization: interrupted downloads leave .terrain.part,
+                // never a truncated .terrain that would be mistaken for complete.
+                let partial = dest.with_extension("terrain.part");
+                tokio::fs::write(&partial, bytes).await.map_err(|e| e.to_string())?;
+                if tokio::fs::metadata(&dest).await.is_ok() {
+                    tokio::fs::remove_file(&dest).await.map_err(|e| e.to_string())?;
+                }
+                tokio::fs::rename(&partial, &dest).await.map_err(|e| e.to_string())?;
                 Ok(Some(tile))
             }
         })).buffer_unordered(concurrency);
