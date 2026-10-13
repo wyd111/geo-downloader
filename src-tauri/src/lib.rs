@@ -16,6 +16,7 @@ pub mod streaming_tiff;
 pub mod streaming_raster;
 pub mod pyramid;
 pub mod tiles3d;
+pub mod terrain_ion;
 pub mod wayback;
 pub mod wayback_metadata;
 pub mod budget;
@@ -158,6 +159,8 @@ pub fn run() {
             commands::download_osm_data,
             commands::download_admin_boundary_file,
             // 3D Tiles
+            commands::analyze_ion_terrain,
+            commands::create_ion_terrain_task,
             commands::analyze_3dtiles,
             commands::estimate_3dtiles,
             commands::create_3dtiles_task,
