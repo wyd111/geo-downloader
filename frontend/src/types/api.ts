@@ -437,3 +437,24 @@ export interface Tiles3dTaskRequest {
   proxy?: Nullable<string>
 }
 
+
+export interface TerrainIonRequest {
+  asset_id: number
+  access_token: string
+  /** WGS84 [west, south, east, north] */
+  bounds: [number, number, number, number]
+  min_level: number
+  max_level: number
+  save_path: string
+  concurrency: number
+  proxy: Nullable<string>
+  confirm_offline_rights: boolean
+}
+
+export interface TerrainIonSummary {
+  version: string
+  format: string
+  projection: string
+  scheme: string
+  estimated_tiles: number
+}
