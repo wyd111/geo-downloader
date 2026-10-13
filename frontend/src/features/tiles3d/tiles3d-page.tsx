@@ -19,6 +19,7 @@ import { DispatchModeRadio } from '@/features/region/dispatch-mode-radio'
 import { getSettings, saveSettings } from '@/features/settings/settings-api'
 import { useSelectionStore } from '@/store/selection-store'
 import { useAppStore } from '@/store/app-store'
+import { TerrainIonPanel } from './terrain-ion-panel'
 
 import {
   analyze3dTiles,
@@ -71,6 +72,7 @@ export function Tiles3dPage() {
   const bounds = useSelectionStore((s) => s.bounds)
   const polygon = useSelectionStore((s) => s.polygon)
 
+  const [datasetMode, setDatasetMode] = useState<'tiles3d' | 'terrain'>('tiles3d')
   const [sourceMode, setSourceMode] = useState<SourceMode>('url')
   const [tilesetUrl, setTilesetUrl] = useState('')
   const [referer, setReferer] = useState('')
@@ -272,6 +274,16 @@ export function Tiles3dPage() {
 
   return (
     <div className="space-y-4">
+      <Tabs value={datasetMode} onValueChange={(value) => setDatasetMode(value as 'tiles3d' | 'terrain')}>
+        <TabsList className="grid h-8 w-full grid-cols-2">
+          <TabsTrigger value="tiles3d">3D Tiles 模型</TabsTrigger>
+          <TabsTrigger value="terrain">Cesium Terrain</TabsTrigger>
+        </TabsList>
+      </Tabs>
+      {datasetMode === 'terrain' ? (
+        <TerrainIonPanel />
+      ) : (
+        <>
       <RegionSelector />
 
       <PanelSection
@@ -448,6 +460,8 @@ export function Tiles3dPage() {
           {t('tiles3d.localPreviewHint')}
         </p>
       </PanelSection>
+        </>
+      )}
     </div>
   )
 }

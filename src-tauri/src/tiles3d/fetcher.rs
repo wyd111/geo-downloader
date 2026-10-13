@@ -105,6 +105,15 @@ impl Tiles3dFetcher {
 
                 log::info!("Ion endpoint: type={}, url={}", endpoint.r#type, &raw_url);
 
+                // Ion assets are not universally 3D Tiles. TERRAIN uses layer.json.
+                if !endpoint.r#type.eq_ignore_ascii_case("3DTILES") {
+                    return Err(format!(
+                        "Cesium ion 资产类型是 {}，不能以 tileset.json 解析。\
+                         TERRAIN 请切换到 Cesium Terrain 下载模式。",
+                        endpoint.r#type
+                    ));
+                }
+
                 // 认证头：标准 Ion 用 Bearer token，外部类型（如 Google）不需要
                 let mut headers = HashMap::new();
                 if let Some(token) = &endpoint.access_token {

@@ -3288,6 +3288,124 @@ pub async fn download_and_install_update(
 }
 
 // ============================================================
+// Cesium ion Terrain (Quantized Mesh) download commands
+// ============================================================
+
+#[tauri::command]
+pub async fn analyze_ion_terrain(
+    request: crate::terrain_ion::TerrainRequest,
+) -> Result<crate::terrain_ion::TerrainSummary, String> {
+    let client = crate::terrain_ion::TerrainIonClient::new(request.proxy.as_deref())?;
+    client.analyze(&request).await
+}
+
+#[tauri::command]
+pub async fn create_ion_terrain_task(
+    app: AppHandle,
+    task_manager: State<'_, Arc<TaskManager>>,
+    request: crate::terrain_ion::TerrainRequest,
+    task_name: String,
+) -> Result<CreateTaskResult, String> {
+    if !request.confirm_offline_rights {
+        return Err("请确认资产许可允许离线复制和存储".into());
+    }
+    // Validate credentials, format, bounds and size BEFORE registering a task.
+    let client = crate::terrain_ion::TerrainIonClient::new(request.proxy.as_deref())?;
+    let summary = client.analyze(&request).await?;
+    if summary.estimated_tiles == 0 {
+        return Err("选区内无可下载地形瓦片".into());
+    }
+    let task_id = uuid::Uuid::new_v4().to_string();
+    let tile_count = summary.estimated_tiles;
+    let source_name = format!("Cesium ion Terrain #{}", request.asset_id);
+    let (cancel, pause) = task_manager.create_task(
+        task_id.clone(),
+        task_name.clone(),
+        "terrain_ion".to_string(),
+        source_name.clone(),
+        request.max_level,
+        "terrain".to_string(),
+        request.save_path.clone(),
+        tile_count,
+    );
+
+    let tm = Arc::clone(&task_manager);
+    let tid = task_id.clone();
+    tokio::spawn(async move {
+        let save_path = request.save_path.clone();
+        let zoom = request.max_level;
+        let app_progress = app.clone();
+        let tm_progress = Arc::clone(&tm);
+        let id_progress = tid.clone();
+        task_log(&app, &tm, &tid, "INFO", "开始下载已获离线授权的 Quantized Mesh 地形");
+        let result = client.download(&request, cancel.clone(), pause, move |p| {
+            let percent = (p.completed as f64 / p.total.max(1) as f64) * 100.0;
+            tm_progress.update_progress(
+                &id_progress,
+                TaskStatus::Downloading,
+                percent,
+                p.completed,
+                p.failed,
+                Some(p.message.clone()),
+            );
+            let _ = app_progress.emit(
+                &format!("task-progress-{}", id_progress),
+                TaskProgressPayload {
+                    task_id: id_progress.clone(),
+                    status: "downloading".into(),
+                    progress: percent,
+                    completed: p.completed,
+                    total: p.total,
+                    message: Some(p.message),
+                },
+            );
+        }).await;
+
+        match result {
+            Ok(layer_json) => {
+                let size = dir_size_bytes(std::path::Path::new(&save_path));
+                task_log(&app, &tm, &tid, "INFO", &format!("地形下载完成：{}", layer_json.display()));
+                tm.complete_task(&tid, size);
+                let log_metadata = tm.get_log_metadata(&tid).unwrap_or_default();
+                let record = DownloadRecord::new(
+                    task_name, "terrain_ion".into(), source_name,
+                    zoom, "terrain".into(), save_path, size,
+                    tile_count, 0, DownloadStatus::Completed,
+                ).with_log_metadata(&log_metadata);
+                persist_history_record(&app, record).await;
+                let _ = app.emit(
+                    &format!("task-progress-{}", tid),
+                    TaskProgressPayload {
+                        task_id: tid, status: "completed".into(),
+                        progress: 100.0, completed: tile_count, total: tile_count,
+                        message: Some("layer.json 和离线 terrain 瓦片已生成".into()),
+                    }
+                );
+            }
+            Err(error) => {
+                if tm.is_cancelled(&tid) {
+                    task_log(&app, &tm, &tid, "WARN", "任务已取消");
+                    tm.mark_cancelled(&tid);
+                } else {
+                    task_log(&app, &tm, &tid, "ERROR", &error);
+                    tm.fail_task(&tid, error.clone());
+                }
+                let _ = app.emit(
+                    &format!("task-progress-{}", tid),
+                    TaskProgressPayload {
+                        task_id: tid.clone(),
+                        status: if tm.is_cancelled(&tid) { "cancelled" } else { "failed" }.into(),
+                        progress: 0.0, completed: 0, total: tile_count,
+                        message: Some(error),
+                    }
+                );
+            }
+        }
+    });
+    Ok(CreateTaskResult { task_id, tile_count })
+}
+
+// ============================================================
 // 3D Tiles 下载命令
 // ============================================================
 
@@ -3756,13 +3874,14 @@ pub async fn serve_local_tiles(dir_path: String) -> Result<String, String> {
                             Some("png") => "image/png",
                             Some("jpg" | "jpeg") => "image/jpeg",
                             Some("ktx2") => "image/ktx2",
+                            Some("terrain") => "application/vnd.quantized-mesh",
                             Some("pbf" | "mvt") => "application/x-protobuf",
                             Some("webp") => "image/webp",
                             _ => "application/octet-stream",
                         };
                         // 矢量瓦片往往以 gzip 落盘，浏览器需要 Content-Encoding: gzip 才能透明解压
                         let is_gzip = data.len() >= 2 && data[0] == 0x1f && data[1] == 0x8b;
-                        let encoding_header = if is_gzip && matches!(ext, Some("pbf" | "mvt")) {
+                        let encoding_header = if is_gzip && matches!(ext, Some("pbf" | "mvt" | "terrain")) {
                             "Content-Encoding: gzip\r\n"
                         } else {
                             ""

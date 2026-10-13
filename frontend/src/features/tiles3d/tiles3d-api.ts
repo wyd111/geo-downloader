@@ -7,6 +7,8 @@ import type {
   Tiles3dSource,
   Tiles3dTaskRequest,
   TilesetSummary,
+  TerrainIonRequest,
+  TerrainIonSummary,
 } from '@/types/api'
 
 export function analyze3dTiles(source: Tiles3dSource, proxy: Nullable<string>) {
@@ -49,3 +51,12 @@ export function serveLocalTiles(dirPath: string) {
   return invokeCommand<string>('serve_local_tiles', { dirPath })
 }
 
+
+/** Cesium ion Terrain is NOT the same as a 3D Tiles tileset. */
+export function analyzeIonTerrain(request: TerrainIonRequest) {
+  return invokeCommand<TerrainIonSummary>('analyze_ion_terrain', { request })
+}
+
+export function createIonTerrainTask(request: TerrainIonRequest, taskName: string) {
+  return invokeCommand<CreateTaskResult>('create_ion_terrain_task', { request, taskName })
+}
